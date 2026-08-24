@@ -1,5 +1,6 @@
 const { Client, GatewayIntentBits, Events, EmbedBuilder, SlashCommandBuilder, REST, Routes } = require('discord.js');
 const Database = require('better-sqlite3');
+const cron = require('node-cron');
 require('dotenv').config();
 
 // ---------- Database setup ----------
@@ -92,6 +93,65 @@ client.on(Events.MessageCreate, async (message) => {
   }
 });
 
+// ---------- Leaderboard embed builder ----------
+const MEDALS = ['🥇', '🥈', '🥉'];
+
+async function buildLeaderboardEmbed() {
+  const rows = topUsers.all();
+
+  if (rows.length === 0) {
+    return new EmbedBuilder()
+      .setColor(0xff6b28)
+      .setTitle('🏆 Leaderboard')
+      .setDescription('No one has earned XP yet. Get chatting!');
+  }
+
+  const lines = await Promise.all(
+    rows.map(async (row, i) => {
+      const user = await client.users.fetch(row.userId).catch(() => null);
+      const name = user ? user.username : `Unknown User`;
+      const rankLabel = MEDALS[i] || `**#${i + 1}**`;
+      return `${rankLabel}  ${name}\n> Level **${row.level}** · ${row.xp.toLocaleString()} XP`;
+    })
+  );
+
+  const topUser = rows[0] ? await client.users.fetch(rows[0].userId).catch(() => null) : null;
+
+  const embed = new EmbedBuilder()
+    .setColor(0xff6b28)
+    .setTitle('🏆 Mars Aerospace Leaderboard')
+    .setDescription(lines.join('\n\n'))
+    .setTimestamp()
+    .setFooter({ text: 'Keep chatting to climb the ranks!' });
+
+  if (topUser) {
+    embed.setThumbnail(topUser.displayAvatarURL());
+  }
+
+  return embed;
+}
+
+// ---------- Daily leaderboard post (midnight CET/CEST) ----------
+// Cron runs in Europe/Berlin timezone, which follows CET/CEST automatically (including DST).
+cron.schedule(
+  '0 0 * * *',
+  async () => {
+    const channelId = process.env.LEADERBOARD_CHANNEL_ID;
+    if (!channelId) {
+      console.warn('LEADERBOARD_CHANNEL_ID not set, skipping daily leaderboard post.');
+      return;
+    }
+    const channel = await client.channels.fetch(channelId).catch(() => null);
+    if (!channel) {
+      console.warn('Could not find LEADERBOARD_CHANNEL_ID channel.');
+      return;
+    }
+    const embed = await buildLeaderboardEmbed();
+    channel.send({ embeds: [embed] }).catch(() => {});
+  },
+  { timezone: 'Europe/Berlin' }
+);
+
 // ---------- Slash commands ----------
 const commands = [
   new SlashCommandBuilder()
@@ -120,40 +180,28 @@ client.on(Events.InteractionCreate, async (interaction) => {
     const currentLevelXp = xpForLevel(row.level);
     const progress = row.xp - currentLevelXp;
     const needed = nextLevelXp - currentLevelXp;
+    const percent = Math.min(1, progress / needed);
+
+    const filledBlocks = Math.round(percent * 12);
+    const bar = '█'.repeat(filledBlocks) + '░'.repeat(12 - filledBlocks);
 
     const embed = new EmbedBuilder()
       .setColor(0xff6b28)
-      .setTitle(`${target.username}'s Rank`)
+      .setAuthor({ name: `${target.username}'s Rank`, iconURL: target.displayAvatarURL() })
       .addFields(
-        { name: 'Level', value: `${row.level}`, inline: true },
-        { name: 'Total XP', value: `${row.xp}`, inline: true },
-        { name: 'Progress', value: `${progress} / ${needed} XP to next level` }
+        { name: 'Level', value: `**${row.level}**`, inline: true },
+        { name: 'Total XP', value: `**${row.xp.toLocaleString()}**`, inline: true },
+        { name: '\u200b', value: '\u200b', inline: true },
+        { name: 'Progress to next level', value: `${bar}  ${progress}/${needed} XP` }
       )
-      .setThumbnail(target.displayAvatarURL());
+      .setThumbnail(target.displayAvatarURL())
+      .setColor(0xff6b28);
 
     return interaction.reply({ embeds: [embed] });
   }
 
   if (interaction.commandName === 'leaderboard') {
-    const rows = topUsers.all();
-
-    if (rows.length === 0) {
-      return interaction.reply('No one has earned XP yet.');
-    }
-
-    const lines = await Promise.all(
-      rows.map(async (row, i) => {
-        const user = await client.users.fetch(row.userId).catch(() => null);
-        const name = user ? user.username : `Unknown (${row.userId})`;
-        return `**${i + 1}.** ${name} — Level ${row.level} (${row.xp} XP)`;
-      })
-    );
-
-    const embed = new EmbedBuilder()
-      .setColor(0xff6b28)
-      .setTitle('🏆 Leaderboard')
-      .setDescription(lines.join('\n'));
-
+    const embed = await buildLeaderboardEmbed();
     return interaction.reply({ embeds: [embed] });
   }
 });
