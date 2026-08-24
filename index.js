@@ -82,7 +82,13 @@ client.on(Events.MessageCreate, async (message) => {
     const embed = new EmbedBuilder()
       .setColor(0xff6b28)
       .setDescription(`🎉 ${message.author} leveled up to **Level ${newLevel}**!`);
-    message.channel.send({ embeds: [embed] }).catch(() => {});
+
+    const levelUpChannel = message.guild.channels.cache.get(process.env.LEVEL_UP_CHANNEL_ID);
+    if (levelUpChannel) {
+      levelUpChannel.send({ embeds: [embed] }).catch(() => {});
+    } else {
+      console.warn('LEVEL_UP_CHANNEL_ID not found in this server, skipping level-up message.');
+    }
   }
 });
 
